@@ -1,19 +1,17 @@
 #include <stdbool.h>
 #include <string.h>
-#include <assert.h>
 
 #include "fpconv.h"
 #include "powers.h"
 
-#define MMSK 0x000FFFFFFFFFFFFFULL /* mantissa */
-#define EMSK 0x7FF0000000000000ULL /* exponent */
-#define HMSK 0x0010000000000000ULL /* hidden bit */
-#define SMSK 0x8000000000000000ULL /* sign bit */
-#define EBIAS (1023 + 52) /* exponent bias */
+#define fracmask  0x000FFFFFFFFFFFFFU
+#define expmask   0x7FF0000000000000U
+#define hiddenbit 0x0010000000000000U
+#define signmask  0x8000000000000000U
+#define expbias   (1023 + 52)
 
-#define ONE_LOG_10 0.30102999566398114 /* 1 / lg 10 */
-
-#define LOMSK 0x00000000FFFFFFFFULL
+#define absv(n) ((n) < 0 ? -(n) : (n))
+#define minv(a, b) ((a) < (b) ? (a) : (b))
 
 static uint64_t tens[] = {
     10000000000000000000U, 1000000000000000000U, 100000000000000000U,
@@ -22,18 +20,8 @@ static uint64_t tens[] = {
     10000000000U, 1000000000U, 100000000U,
     10000000U, 1000000U, 100000U,
     10000U, 1000U, 100U,
-    10U, 1U 
+    10U, 1U
 };
-
-static inline int absv(int n)
-{
-    return n < 0 ? -n : n;
-}
-
-static inline int ceilv(double fp)
-{
-    return (int)fp + (1 - (int)((int)(fp + 1) - fp));
-}
 
 static inline uint64_t get_dbits(double d)
 {
@@ -50,54 +38,38 @@ static Fp build_fp(double d)
     uint64_t bits = get_dbits(d);
 
     Fp fp;
-    fp.frac = bits & MMSK;
-    fp.exp = (bits & EMSK) >> 52;
+    fp.frac = bits & fracmask;
+    fp.exp = (bits & expmask) >> 52;
 
     if(fp.exp) {
-        fp.frac += HMSK;
-        fp.exp -= EBIAS;
+        fp.frac += hiddenbit;
+        fp.exp -= expbias;
 
     } else {
-        fp.exp = -EBIAS + 1;
+        fp.exp = -expbias + 1;
     }
-    
+
     return fp;
 }
 
 static void normalize(Fp* fp)
 {
-    while ((fp->frac & HMSK) == 0) {
+    while ((fp->frac & hiddenbit) == 0) {
         fp->frac <<= 1;
         fp->exp--;
     }
 
-    /* exponent + hidden bit */
     int shift = 64 - 52 - 1;
     fp->frac <<= shift;
     fp->exp -= shift;
 }
 
-static Fp get_power10(int k)
-{
-    /* powers of ten exponent offset */
-    int index = 343 + k;
-
-    assert(index >= 0 && index < 687);
-
-    return powers10[index];
-}
-
-static int k_comp(int exp, int alpha, int q)
-{
-    return ceilv((alpha - (exp + q) + (q - 1)) * ONE_LOG_10);
-}
-
 static void get_normalized_boundaries(Fp* fp, Fp* lower, Fp* upper)
 {
-    upper->frac = (fp->frac << 1) + 1; 
+    upper->frac = (fp->frac << 1) + 1;
     upper->exp  = fp->exp - 1;
 
-    while (!(upper->frac & (HMSK << 1))) {
+    while ((upper->frac & (hiddenbit << 1)) == 0) {
         upper->frac <<= 1;
         upper->exp--;
     }
@@ -107,11 +79,12 @@ static void get_normalized_boundaries(Fp* fp, Fp* lower, Fp* upper)
     upper->frac <<= u_shift;
     upper->exp = upper->exp - u_shift;
 
-    bool fraction = fp->frac == HMSK;
-    int l_shift = fraction ? 2 : 1;
+
+    int l_shift = fp->frac == hiddenbit ? 2 : 1;
 
     lower->frac = (fp->frac << l_shift) - 1;
     lower->exp = fp->exp - l_shift;
+
 
     lower->frac <<= lower->exp - upper->exp;
     lower->exp = upper->exp;
@@ -119,12 +92,14 @@ static void get_normalized_boundaries(Fp* fp, Fp* lower, Fp* upper)
 
 static Fp multiply(Fp* a, Fp* b)
 {
-    uint64_t ah_bl = (a->frac >> 32)   * (b->frac & LOMSK);
-    uint64_t al_bh = (a->frac & LOMSK) * (b->frac >> 32);
-    uint64_t al_bl = (a->frac & LOMSK) * (b->frac & LOMSK);
-    uint64_t ah_bh = (a->frac >> 32)   * (b->frac >> 32);
+    const uint64_t lomask = 0x00000000FFFFFFFF;
 
-    uint64_t tmp = (ah_bl & LOMSK) + (al_bh & LOMSK) + (al_bl >> 32); 
+    uint64_t ah_bl = (a->frac >> 32)    * (b->frac & lomask);
+    uint64_t al_bh = (a->frac & lomask) * (b->frac >> 32);
+    uint64_t al_bl = (a->frac & lomask) * (b->frac & lomask);
+    uint64_t ah_bh = (a->frac >> 32)    * (b->frac >> 32);
+
+    uint64_t tmp = (ah_bl & lomask) + (al_bh & lomask) + (al_bl >> 32); 
     /* round up */
     tmp += 1U << 31;
 
@@ -132,7 +107,7 @@ static Fp multiply(Fp* a, Fp* b)
         ah_bh + (ah_bl >> 32) + (al_bh >> 32) + (tmp >> 32),
         a->exp + b->exp + 64
     };
-    
+
     return fp;
 }
 
@@ -146,21 +121,22 @@ static void round_digit(char* digits, int ndigits, uint64_t delta, uint64_t rem,
     }
 }
 
-static int digit_gen(Fp* fp, Fp* upper, Fp* lower, char* digits, int* K)
+static int generate_digits(Fp* fp, Fp* upper, Fp* lower, char* digits, int* K)
 {
     uint64_t wfrac = upper->frac - fp->frac;
     uint64_t delta = upper->frac - lower->frac;
 
     Fp one;
-    one.frac = 1ULL << -upper->exp;
+    one.frac = 1UL << -upper->exp;
     one.exp  = upper->exp;
-    
+
     uint64_t part1 = upper->frac >> -one.exp;
     uint64_t part2 = upper->frac & (one.frac - 1);
 
     int idx = 0, kappa = 10;
+    uint64_t* divp;
     /* 1000000000 */
-    for(uint64_t* divp = tens + 9; kappa > 0; divp++) {
+    for(divp = tens + 10; kappa > 0; divp++) {
 
         uint64_t div = *divp;
         unsigned digit = part1 / div;
@@ -182,7 +158,7 @@ static int digit_gen(Fp* fp, Fp* upper, Fp* lower, char* digits, int* K)
     }
 
     /* 10 */
-    uint64_t* unit = tens + 17;
+    uint64_t* unit = tens + 18;
 
     while(true) {
         part2 *= 10;
@@ -208,8 +184,6 @@ static int digit_gen(Fp* fp, Fp* upper, Fp* lower, char* digits, int* K)
 
 static int grisu2(double d, char* digits, int* K)
 {
-    const int q = 64, alpha = -59;
-
     Fp w = build_fp(d);
 
     Fp lower, upper;
@@ -217,8 +191,8 @@ static int grisu2(double d, char* digits, int* K)
 
     normalize(&w);
 
-    int k = k_comp(upper.exp, alpha, q);
-    Fp cp = get_power10(k);
+    int k;
+    Fp cp = find_cachedpow10(upper.exp, &k);
 
     w     = multiply(&w,     &cp);
     upper = multiply(&upper, &cp);
@@ -229,17 +203,17 @@ static int grisu2(double d, char* digits, int* K)
 
     *K = -k;
 
-    return digit_gen(&w, &upper, &lower, digits, K);
+    return generate_digits(&w, &upper, &lower, digits, K);
 }
 
-static int emit_digits(char* digits, int ndigits, char* buf, int K)
+static int emit_digits(char* digits, int ndigits, char* dest, int K, bool neg)
 {
     int exp = absv(K + ndigits - 1);
 
     /* write plain integer */
-    if(K >= 0 && (exp < (ndigits + 4))) {
-        memcpy(buf, digits, ndigits);
-        memset(buf + ndigits, '0', K);
+    if(K >= 0 && (exp < (ndigits + 7))) {
+        memcpy(dest, digits, ndigits);
+        memset(dest + ndigits, '0', K);
 
         return ndigits + K;
     }
@@ -250,82 +224,83 @@ static int emit_digits(char* digits, int ndigits, char* buf, int K)
         /* fp < 1.0 -> write leading zero */
         if(offset <= 0) {
             offset = -offset;
-            buf[0] = '0';
-            buf[1] = '.';
-            memset(buf + 2, '0', offset);
-            memcpy(buf + offset + 2, digits, ndigits);
+            dest[0] = '0';
+            dest[1] = '.';
+            memset(dest + 2, '0', offset);
+            memcpy(dest + offset + 2, digits, ndigits);
 
             return ndigits + 2 + offset;
 
         /* fp > 1.0 */
         } else {
-            memcpy(buf, digits, offset);
-            buf[offset] = '.';
-            memcpy(buf + offset + 1, digits + offset, ndigits - offset);
+            memcpy(dest, digits, offset);
+            dest[offset] = '.';
+            memcpy(dest + offset + 1, digits + offset, ndigits - offset);
 
             return ndigits + 1;
         }
     }
 
     /* write decimal w/ scientific notation */
+    ndigits = minv(ndigits, 18 - neg);
 
     int idx = 0;
-    buf[idx++] = digits[0];
+    dest[idx++] = digits[0];
 
     if(ndigits > 1) {
-        buf[idx++] = '.';
-        memcpy(buf + idx, digits + 1, ndigits - 1);
+        dest[idx++] = '.';
+        memcpy(dest + idx, digits + 1, ndigits - 1);
         idx += ndigits - 1;
     }
 
-    buf[idx++] = 'e';
+    dest[idx++] = 'e';
 
     char sign = K + ndigits - 1 < 0 ? '-' : '+';
-    buf[idx++] = sign;
+    dest[idx++] = sign;
 
-    int div = 0;
+    int cent = 0;
 
     if(exp > 99) {
-        div = exp / 100;
-        buf[idx++] = div + '0';
-        exp -= div * 100;
+        cent = exp / 100;
+        dest[idx++] = cent + '0';
+        exp -= cent * 100;
     }
     if(exp > 9) {
         int dec = exp / 10;
-        buf[idx++] = dec + '0';
+        dest[idx++] = dec + '0';
         exp -= dec * 10;
 
-    } else if(div) {
-        buf[idx++] = '0';
+    } else if(cent) {
+        dest[idx++] = '0';
     }
 
-    buf[idx++] = exp % 10 + '0';
+    dest[idx++] = exp % 10 + '0';
 
     return idx;
 }
 
-static int filter_special(double fp, char* buf)
+static int filter_special(double fp, char* dest)
 {
     if(fp == 0.0) {
-        buf[0] = '0';
+        dest[0] = '0';
         return 1;
     }
 
     uint64_t bits = get_dbits(fp);
 
-    bool nan = (bits & EMSK) == EMSK;
+    bool nan = (bits & expmask) == expmask;
 
     if(!nan) {
         return 0;
     }
 
-    if(bits & MMSK) {
-        buf[0] = 'n'; buf[1] = 'a'; buf[2] = 'n';
+    if(bits & fracmask) {
+        dest[0] = 'n'; dest[1] = 'a'; dest[2] = 'n';
 
     } else {
-        buf[0] = 'i'; buf[1] = 'n'; buf[2] = 'f';
+        dest[0] = 'i'; dest[1] = 'n'; dest[2] = 'f';
     }
-    
+
     return 3;
 }
 
@@ -334,10 +309,12 @@ int fpconv_dtoa(double d, char dest[24])
     char digits[18];
 
     int str_len = 0;
+    bool neg = false;
 
-    if(get_dbits(d) & SMSK) {
+    if(get_dbits(d) & signmask) {
         dest[0] = '-';
         str_len++;
+        neg = true;
     }
 
     int spec = filter_special(d, dest + str_len);
@@ -349,7 +326,7 @@ int fpconv_dtoa(double d, char dest[24])
     int K = 0;
     int ndigits = grisu2(d, digits, &K);
 
-    str_len += emit_digits(digits, ndigits, dest + str_len, K);
+    str_len += emit_digits(digits, ndigits, dest + str_len, K, neg);
 
     return str_len;
 }
