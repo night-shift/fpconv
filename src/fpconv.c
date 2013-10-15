@@ -127,7 +127,7 @@ static int generate_digits(Fp* fp, Fp* upper, Fp* lower, char* digits, int* K)
     uint64_t delta = upper->frac - lower->frac;
 
     Fp one;
-    one.frac = 1UL << -upper->exp;
+    one.frac = 1ULL << -upper->exp;
     one.exp  = upper->exp;
 
     uint64_t part1 = upper->frac >> -one.exp;
