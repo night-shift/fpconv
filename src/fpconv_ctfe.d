@@ -206,17 +206,17 @@ Fp build_fp(double d)
 {
     ulong bits = get_dbits(d);
 
-    Fp fp;
-    fp.frac = bits & fracmask;
-    fp.exp = (bits & expmask) >> fracbits;
+    ulong frac = bits & fracmask;
+    long lexp = (bits & expmask) >> fracbits;
 
-    if(fp.exp) {
-        fp.frac += hiddenbit;
-        fp.exp -= expbias;
+    if(lexp) {
+        frac += hiddenbit;
+        lexp -= expbias;
     } else {
-        fp.exp = -(expbias) + 1;
+        lexp = -(expbias) + 1;
     }
 
+    Fp fp = Fp (frac, cast(int)lexp);
     return fp;
 }
 
