@@ -230,11 +230,11 @@ double build_double(Fp fp)
   else
   {
      bits = fp.frac - hiddenbit;
-     bits |= ((ulong(fp.exp + expbias) << fracbits) & expmask); 
+     bits |= ((ulong(fp.exp + expbias) << fracbits) & expmask);
   }
 
   double r = *(cast(double*) &bits);
-  return r; 
+  return r;
 }
 
 static assert (build_fp(double.max).build_double == double.max);
@@ -397,7 +397,13 @@ static int emit_digits(char* digits, int ndigits, char* dest, int K, bool neg)
     int exp = ((K + ndigits - 1) < 0 ? -(K + ndigits - 1) : (K + ndigits - 1));
 
 
-    if(K >= 0 && (exp < (ndigits + 7))) {
+    int max_trailing_zeros = 7;
+
+    if(neg) {
+        max_trailing_zeros -= 1;
+    }
+
+    if(K >= 0 && (exp < (ndigits + max_trailing_zeros))) {
         dest[0 .. ndigits] = digits[0 .. ndigits];
         //memcpy(dest, digits, ndigits);
         dest[ndigits .. ndigits + K] =  '0';
@@ -519,10 +525,10 @@ int fpconv_dtoa(double d, /*ref char[24]*/ char* dest)
        return ++str_len;
     }
 
-   // manually inlined is_special 
+   // manually inlined is_special
 
     bool is_nan = ((bits & expmask) == expmask);
-   
+
     if (is_nan)
     {
         // this case is unlikely
@@ -581,6 +587,8 @@ static assert (fpconv_dtoa(1.3) == "1.3");
 static assert (fpconv_dtoa(0.3) == "0.3");
 static assert (fpconv_dtoa(10) == "10");
 static assert (fpconv_dtoa(double.max) == "1.7976931348623157e+308");
+// ensure no index oob error occurs
+static assert (fpconv_dtoa(-151115727451828646838272.0));
 
 // printf can't handle this one ;)
 static assert (fpconv_dtoa(0.3049589) == "0.3049589");
