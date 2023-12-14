@@ -99,7 +99,7 @@ static Fp multiply(Fp* a, Fp* b)
     uint64_t al_bl = (a->frac & lomask) * (b->frac & lomask);
     uint64_t ah_bh = (a->frac >> 32)    * (b->frac >> 32);
 
-    uint64_t tmp = (ah_bl & lomask) + (al_bh & lomask) + (al_bl >> 32); 
+    uint64_t tmp = (ah_bl & lomask) + (al_bh & lomask) + (al_bl >> 32);
     /* round up */
     tmp += 1U << 31;
 
@@ -210,8 +210,15 @@ static int emit_digits(char* digits, int ndigits, char* dest, int K, bool neg)
 {
     int exp = absv(K + ndigits - 1);
 
+    int max_trailing_zeros = 7;
+
+    if(neg) {
+        max_trailing_zeros -= 1;
+    }
+
     /* write plain integer */
-    if(K >= 0 && (exp < (ndigits + 7))) {
+    if(K >= 0 && (exp < (ndigits + max_trailing_zeros))) {
+
         memcpy(dest, digits, ndigits);
         memset(dest + ndigits, '0', K);
 
